@@ -5,9 +5,10 @@ app: shop
 environments: [dev, test, prod]
 
 # Per-namespace quota (Azure managed namespace, vendors can't change it)
+# CPU in millicores (500m), memory in Mi/Gi - the format az aks namespace accepts
 quota:
   cpuRequest: 500m
-  cpuLimit: "1"
+  cpuLimit: 1000m          # CPU in millicores (1000m = 1 CPU)
   memoryRequest: 512Mi
   memoryLimit: 1Gi
 
