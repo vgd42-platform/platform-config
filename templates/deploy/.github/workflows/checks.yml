@@ -1,0 +1,16 @@
+# Required check on every PR. The logic lives in platform-config, so the vendor
+# can't weaken it by editing this repo.
+name: checks
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  platform-checks:
+    uses: __ORG__/platform-config/.github/workflows/deploy-checks.yml@main
+    secrets: inherit

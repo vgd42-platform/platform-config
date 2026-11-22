@@ -1,0 +1,73 @@
+{{- /*
+  For every vendor file in vendors/:
+    - one AppProject  = the vendor's fence in Argo CD (which repo, which namespaces)
+    - one Application per environment = "deploy envs/<env> of the deploy repo"
+  Demo assumption: one app per vendor (the project is named after the vendor).
+*/ -}}
+{{- range $path, $_ := .Files.Glob "vendors/*.yaml" }}
+{{- $v := $.Files.Get $path | fromYaml }}
+{{- $name := printf "%s-%s" $v.vendor $v.app }}
+{{- $repo := printf "https://github.com/%s/deploy-%s" $.Values.org $name }}
+---
+# --- Project: the vendor may deploy only its own repo into its own namespaces ---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: {{ $v.vendor }}
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"   # create projects before their applications
+spec:
+  description: Vendor {{ $v.vendor }}
+  sourceRepos:
+    - {{ $repo }}
+  destinations:
+  {{- range $v.environments }}
+    - server: https://kubernetes.default.svc
+      namespace: {{ $name }}-{{ . }}
+  {{- end }}
+  # No cluster-wide objects, and only these kinds inside the namespaces
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - { group: "", kind: Service }
+    - { group: "", kind: ServiceAccount }
+    - { group: "", kind: ConfigMap }
+    - { group: apps, kind: Deployment }
+  {{- if $v.freeze }}
+  # --- Freeze: block every sync of the vendor's prod app until removed ---
+  syncWindows:
+    - kind: deny
+      schedule: "* * * * *"
+      duration: 24h
+      applications: ["*-prod"]
+      manualSync: false
+  {{- end }}
+{{- range $env := $v.environments }}
+---
+# --- Application: keeps <namespace> equal to envs/{{ $env }} on main ---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ $name }}-{{ $env }}
+  namespace: argocd
+  labels:
+    demo/vendor: {{ $v.vendor }}
+    demo/env: {{ $env }}
+spec:
+  project: {{ $v.vendor }}
+  source:
+    repoURL: {{ $repo }}
+    targetRevision: main
+    path: envs/{{ $env }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ $name }}-{{ $env }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true          # manual changes in the cluster are reverted
+    retry:
+      limit: 10
+      backoff: { duration: 30s, maxDuration: 5m }
+{{- end }}
+{{- end }}

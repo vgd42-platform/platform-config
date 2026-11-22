@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: __APP__
+  labels:
+    app.kubernetes.io/name: __APP__
+    demo/vendor: __VENDOR__
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: __APP__
+  template:
+    metadata:
+      # --- Labels the 360 view uses (version is added per environment) ---
+      labels:
+        app.kubernetes.io/name: __APP__
+        demo/vendor: __VENDOR__
+        azure.workload.identity/use: "true"   # inject the Azure identity token
+    spec:
+      serviceAccountName: __APP__
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: __APP__
+          image: app-image   # replaced per environment by envs/<env>/kustomization.yaml
+          ports:
+            - containerPort: 8080
+          # --- Settings for the app; no secrets anywhere ---
+          env:
+            - { name: VENDOR, value: "__VENDOR__" }
+            - { name: APP, value: "__APP__" }
+            - { name: STORAGE_ACCOUNT_URL, value: "https://__STORAGE__.blob.core.windows.net" }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+          # --- Limits are required by platform policy and by the namespace quota ---
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 200m, memory: 192Mi }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }

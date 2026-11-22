@@ -1,0 +1,17 @@
+// 360 view: which version of which vendor app runs in which environment, right now.
+// Run in Log Analytics (workspace law-<prefix>) > Logs.
+
+// --- Pods seen in the last 15 minutes, with their labels ---
+KubePodInventory
+| where TimeGenerated > ago(15m)
+| extend labels = todynamic(PodLabel)[0]
+| extend Vendor  = tostring(labels["demo/vendor"]),
+         App     = tostring(labels["app.kubernetes.io/name"]),
+         Version = tostring(labels["app.kubernetes.io/version"]),
+         Env     = extract(@"-(dev|test|prod)$", 1, Namespace)
+| where isnotempty(Vendor) and isnotempty(Env)
+// --- Latest version per vendor app and environment ---
+| summarize arg_max(TimeGenerated, Version) by Vendor, App, Env
+// --- One row per app, one column per environment ---
+| evaluate pivot(Env, take_any(Version), Vendor, App)
+| project Vendor, App, dev, test, prod

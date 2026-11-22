@@ -1,0 +1,2 @@
+# Set by the root application (bootstrap/root-app.yaml).
+org: ""   # GitHub org that hosts the deploy-<vendor>-<app> repos

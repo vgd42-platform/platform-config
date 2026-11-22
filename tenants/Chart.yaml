@@ -1,0 +1,6 @@
+# Helm chart rendered by Argo CD (root app "tenants").
+# Input: one YAML file per vendor app in vendors/. Output: Argo CD objects.
+apiVersion: v2
+name: tenants
+description: AppProject and Applications for every onboarded vendor app
+version: 0.1.0

@@ -1,0 +1,8 @@
+// Changes the cluster refused (admission: pod security, quotas, policy).
+// Pairs with scene 4: the privileged pod and the pod without limits show up here.
+
+KubeEvents
+| where TimeGenerated > ago(1d)
+| where Reason in ("FailedCreate", "FailedAdmission") or Message has "forbidden"
+| project TimeGenerated, Namespace, Name, Reason, Message
+| order by TimeGenerated desc

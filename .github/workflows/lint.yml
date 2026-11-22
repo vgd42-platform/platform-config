@@ -1,0 +1,24 @@
+# Sanity check for platform-config PRs (for example, onboarding a new vendor).
+name: lint
+
+on:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Every vendor file has the fields onboarding needs ---
+      - name: Vendor files
+        run: |
+          for f in tenants/vendors/*.yaml; do
+            yq -e '.vendor and .app and .environments and .quota.cpuRequest and .quota.memoryRequest' "$f" >/dev/null \
+              || { echo "::error file=$f::missing vendor, app, environments or quota"; exit 1; }
+            echo "$f OK"
+          done
+
+      # --- The tenants chart still renders ---
+      - name: Render tenants chart
+        run: helm template tenants tenants --set org=${{ github.repository_owner }} > /dev/null

@@ -1,0 +1,49 @@
+# Vendor action: propose moving the image of the previous environment forward.
+# dev -> test, or test -> prod. Opens a PR as demo-bot; a code owner approves it.
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      to:
+        description: Environment to promote into
+        type: choice
+        options: [test, prod]
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      # --- Act as demo-bot (the "vendor"), so you can approve the PR yourself ---
+      - uses: actions/create-github-app-token@v2
+        id: bot
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.bot.outputs.token }}
+
+      # --- Copy image + version from the previous environment, open the PR ---
+      - name: Open promotion PR
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          TO: ${{ inputs.to }}
+        run: |
+          FROM=$([ "$TO" = "test" ] && echo dev || echo test)
+          DIGEST=$(yq '.images[0].digest' "envs/$FROM/kustomization.yaml")
+          VERSION=$(yq '.labels[0].pairs."app.kubernetes.io/version"' "envs/$FROM/kustomization.yaml")
+          BRANCH="promote/$TO-$VERSION-$GITHUB_RUN_ID"
+          git checkout -q -b "$BRANCH"
+          yq -i ".images[0].digest = \"$DIGEST\" | .labels[0].pairs.\"app.kubernetes.io/version\" = \"$VERSION\"" "envs/$TO/kustomization.yaml"
+          git -c user.name="demo-bot[bot]" -c user.email="demo-bot@users.noreply.github.com" \
+              commit -qam "$TO: promote $VERSION from $FROM"
+          git push -q origin "$BRANCH"
+          gh pr create --head "$BRANCH" --base main \
+            --title "$TO: promote v$VERSION from $FROM" \
+            --body "Same image as $FROM: \`$DIGEST\`. Needs a code owner approval."

@@ -1,0 +1,24 @@
+# Azure resources of this app: plan on PRs that touch infra/, apply after merge.
+name: infra
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['infra/**']
+  push:
+    branches: [main]
+    paths: ['infra/**']
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+concurrency: infra   # one Terraform run at a time
+
+jobs:
+  terraform:
+    uses: __ORG__/platform-config/.github/workflows/infra.yml@main
+    with:
+      mode: ${{ github.event_name == 'pull_request' && 'plan' || 'apply' }}
+    secrets: inherit

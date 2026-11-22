@@ -1,0 +1,6 @@
+# Changes to test, prod and Azure resources need a code owner's approval.
+# dev has no owner: the platform build's PRs merge on their own once checks pass.
+# In the demo you are the only code owner (vendor lead and app owner in one person).
+/envs/test/  @__CODEOWNER__
+/envs/prod/  @__CODEOWNER__
+/infra/      @__CODEOWNER__

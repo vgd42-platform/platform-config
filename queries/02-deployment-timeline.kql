@@ -1,0 +1,14 @@
+// 360 view: when each version first appeared in each environment (a simple
+// deployment ledger built from what actually ran, not from what was approved).
+
+KubePodInventory
+| where TimeGenerated > ago(7d)
+| extend labels = todynamic(PodLabel)[0]
+| extend Vendor  = tostring(labels["demo/vendor"]),
+         App     = tostring(labels["app.kubernetes.io/name"]),
+         Version = tostring(labels["app.kubernetes.io/version"]),
+         Env     = extract(@"-(dev|test|prod)$", 1, Namespace)
+| where isnotempty(Vendor) and isnotempty(Env)
+// --- First time each version was seen per environment = its deployment time ---
+| summarize DeployedAt = min(TimeGenerated) by Vendor, App, Env, Version
+| order by DeployedAt desc

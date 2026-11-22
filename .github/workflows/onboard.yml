@@ -1,0 +1,65 @@
+# Onboarding: runs when a vendor file in tenants/vendors/ is added or changed on main.
+# Can also be started by hand for one file (Actions > onboard > Run workflow).
+name: onboard
+
+on:
+  push:
+    branches: [main]
+    paths: ['tenants/vendors/*.yaml']
+  workflow_dispatch:
+    inputs:
+      file:
+        description: 'Vendor file, e.g. tenants/vendors/acme-shop.yaml'
+        required: true
+
+permissions:
+  id-token: write    # Azure login with OIDC
+  contents: read
+
+concurrency: onboarding   # never two onboardings at once
+
+jobs:
+  onboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # --- Which vendor files did this push add or change? ---
+      - id: files
+        run: |
+          if [ -n "${{ inputs.file }}" ]; then
+            list="${{ inputs.file }}"
+          elif git rev-parse -q --verify HEAD~1 >/dev/null; then
+            list=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'tenants/vendors/*.yaml' | xargs)
+          else
+            list=$(echo tenants/vendors/*.yaml)          # very first commit of the repo
+          fi
+          echo "Vendor files: $list"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+      # --- Azure login: platform identity, no stored secret ---
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # --- Onboard each file (scripts/onboard.sh does the work) ---
+      - name: Onboard
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+          PREFIX: ${{ vars.PREFIX }}
+          LOCATION: ${{ vars.LOCATION }}
+          PLATFORM_RG: ${{ vars.PLATFORM_RG }}
+          PLATFORM_IDENTITY: ${{ vars.PLATFORM_IDENTITY }}
+          AKS_NAME: ${{ vars.AKS_NAME }}
+          AKS_OIDC_ISSUER: ${{ vars.AKS_OIDC_ISSUER }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          CODEOWNER: ${{ vars.CODEOWNER }}
+        run: |
+          for f in ${{ steps.files.outputs.list }}; do
+            bash scripts/onboard.sh "$f"
+          done

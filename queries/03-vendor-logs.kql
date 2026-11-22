@@ -1,0 +1,11 @@
+// What a vendor sees: its own app logs. With granular RBAC (ops/vendor-log-access.sh)
+// a vendor user gets ONLY rows of its own namespaces, even without this filter.
+
+ContainerLogV2
+| where TimeGenerated > ago(1h)
+| where PodNamespace startswith "acme-"          // remove this line when testing as the vendor user
+| extend Log = todynamic(LogMessage)              // the demo app logs JSON
+| project TimeGenerated, PodNamespace, PodName,
+          Level = tostring(Log.level), Message = tostring(Log.msg), Path = tostring(Log.path)
+| order by TimeGenerated desc
+| take 100

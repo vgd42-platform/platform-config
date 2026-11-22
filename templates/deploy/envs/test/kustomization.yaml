@@ -1,0 +1,18 @@
+# test: changed only by a promotion PR from dev; needs the vendor lead (code owner) approval.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+
+# --- Version label (read by the 360 view), set together with the image ---
+labels:
+  - pairs:
+      app.kubernetes.io/version: "0.0.0"
+    includeSelectors: false
+    includeTemplates: true
+
+# --- The image this environment runs, pinned by digest ---
+images:
+  - name: app-image
+    newName: __ACR__.azurecr.io/__VENDOR__/__APP__
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

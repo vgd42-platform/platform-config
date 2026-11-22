@@ -1,0 +1,80 @@
+# DEMO HELPER: plays the vendor and opens a PR with a prepared change, so you can
+# show approvals and blocked changes without a second GitHub account.
+name: demo-vendor-change
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Change to propose
+        type: choice
+        options:
+          - add-storage-container   # infra PR -> plan comment -> approve -> apply
+          - enable-sql              # infra PR -> plan shows a new database (close it, don't merge)
+          - privileged-container    # blocked by platform policy
+          - unattested-image        # blocked: image not built by the platform pipeline
+
+permissions:
+  id-token: write   # only the unattested-image scenario logs in to Azure
+  contents: read
+
+jobs:
+  change:
+    runs-on: ubuntu-latest
+    steps:
+      # --- Act as demo-bot (the "vendor") ---
+      - uses: actions/create-github-app-token@v2
+        id: bot
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.bot.outputs.token }}
+
+      # --- Azure login, needed only to build the "rogue" image ---
+      - uses: azure/login@v2
+        if: inputs.scenario == 'unattested-image'
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # --- Make the change for the chosen scenario ---
+      - name: Change
+        run: |
+          case "${{ inputs.scenario }}" in
+            add-storage-container)
+              sed -i -E 's/^(\s*containers\s*=\s*\[)(.*)\]/\1\2, "invoices"]/' infra/main.tf
+              TITLE='infra: add blob container "invoices"' ;;
+            enable-sql)
+              sed -i -E 's/^(\s*enable_sql\s*=\s*)false/\1true/' infra/main.tf
+              TITLE='infra: add an Azure SQL database' ;;
+            privileged-container)
+              yq -i '.patches += [{"target": {"kind": "Deployment"}, "patch": "- op: add\n  path: /spec/template/spec/containers/0/securityContext/privileged\n  value: true"}]' envs/dev/kustomization.yaml
+              TITLE='dev: run the container privileged' ;;
+            unattested-image)
+              # Built in our registry, but NOT by the platform build workflow -> no attestation
+              mkdir -p /tmp/img
+              printf 'FROM mcr.microsoft.com/azurelinux/base/core:3.0\nCMD ["sleep","infinity"]\n' > /tmp/img/Dockerfile
+              TAG="__VENDOR__/__APP__:hotfix-${{ github.run_id }}"
+              az acr build -r "${{ vars.ACR_NAME }}" -t "$TAG" /tmp/img --no-logs
+              DIGEST=$(az acr repository show -n "${{ vars.ACR_NAME }}" --image "$TAG" --query digest -o tsv)
+              yq -i ".images[0].digest = \"$DIGEST\"" envs/dev/kustomization.yaml
+              TITLE='dev: hotfix image built outside the pipeline' ;;
+          esac
+          echo "TITLE=$TITLE" >> "$GITHUB_ENV"
+
+      # --- Open the PR as demo-bot ---
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+        run: |
+          BRANCH="demo/${{ inputs.scenario }}-$GITHUB_RUN_ID"
+          git checkout -q -b "$BRANCH"
+          git -c user.name="demo-bot[bot]" -c user.email="demo-bot@users.noreply.github.com" commit -qam "$TITLE"
+          git push -q origin "$BRANCH"
+          gh pr create --head "$BRANCH" --base main --title "$TITLE" \
+            --body "Opened by demo-vendor-change (scenario: ${{ inputs.scenario }})."

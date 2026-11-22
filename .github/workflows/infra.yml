@@ -1,0 +1,67 @@
+# Terraform for a vendor's Azure resources. Called by the vendor deploy repo:
+#   mode=plan  on PRs that touch infra/  -> plan posted as a PR comment
+#   mode=apply after merge to main       -> plan applied
+name: infra
+
+on:
+  workflow_call:
+    inputs:
+      mode: { type: string, required: true }   # plan | apply
+
+permissions:
+  id-token: write        # Azure login (OIDC) for provider and state
+  contents: read
+  pull-requests: write   # post the plan
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      # --- State: one file per vendor app in the platform's storage account ---
+      - name: Init
+        run: |
+          KEY="${GITHUB_REPOSITORY#*/deploy-}.tfstate"
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.PLATFORM_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=$KEY" \
+            -backend-config="use_oidc=true" \
+            -backend-config="use_azuread_auth=true"
+
+      # --- Plan: what would change in Azure ---
+      - name: Plan
+        run: terraform plan -input=false -no-color -out=tfplan | tee plan.txt
+
+      # --- PR: show the plan to the reviewer ---
+      - name: Post plan on the PR
+        if: inputs.mode == 'plan'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### Terraform plan"
+            echo '```'
+            grep -E '^(Plan:|No changes|  [#+~-] )' plan.txt | head -n 80 || true
+            echo '```'
+            echo "Full plan: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md
+
+      # --- Main: apply exactly the plan above ---
+      - name: Apply
+        if: inputs.mode == 'apply'
+        run: terraform apply -input=false -auto-approve tfplan

@@ -1,0 +1,21 @@
+# One file per vendor app. Merging a new file here = onboarding.
+# The onboarding workflow creates Azure + GitHub resources; Argo CD creates the apps.
+vendor: acme
+app: shop
+environments: [dev, test, prod]
+
+# Per-namespace quota (Azure managed namespace, vendors can't change it)
+quota:
+  cpuRequest: 500m
+  cpuLimit: "1"
+  memoryRequest: 512Mi
+  memoryLimit: 1Gi
+
+# true = platform freezes prod deployments (Argo CD deny window)
+freeze: false
+
+# Starting background colour of the demo app
+color: "#1f6feb"
+
+# Optional: Entra group of vendor staff -> read-only access to these namespaces
+entraGroupId: ""

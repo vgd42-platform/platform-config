@@ -1,0 +1,97 @@
+# THE build. Called by every vendor's src repo (its ci.yml), but owned by the platform.
+# Only this workflow can push to the registry, and every image it builds gets an
+# attestation naming this workflow, the source repo and the commit. The deploy
+# checks accept nothing else.
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      vendor: { type: string, required: true }
+      app:    { type: string, required: true }
+
+permissions:
+  id-token: write       # Azure login + signing the attestation
+  contents: read
+  attestations: write   # store the attestation on GitHub
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ vars.ACR_NAME }}.azurecr.io/${{ inputs.vendor }}/${{ inputs.app }}
+      DEPLOY_REPO: ${{ github.repository_owner }}/deploy-${{ inputs.vendor }}-${{ inputs.app }}
+    steps:
+      # --- 1. The vendor's source, exactly the pushed commit ---
+      - uses: actions/checkout@v4
+
+      # --- 2. Azure + registry login (OIDC, no stored secret) ---
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - run: az acr login --name "${{ vars.ACR_NAME }}"
+
+      # --- 3. Build and push; keep the digest (the image's fingerprint) ---
+      - id: image
+        run: |
+          VERSION=$(cat VERSION)
+          TAG="$VERSION-${GITHUB_SHA::7}"
+          docker build --build-arg VERSION="$VERSION" --build-arg COMMIT="$GITHUB_SHA" -t "$IMAGE:$TAG" .
+          docker push "$IMAGE:$TAG"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:$TAG" | cut -d@ -f2)
+          { echo "version=$VERSION"; echo "tag=$TAG"; echo "digest=$DIGEST"; } >> "$GITHUB_OUTPUT"
+          echo "Built $IMAGE@$DIGEST"
+
+      # --- 4. Attestation: "this digest was built by platform-config/build.yml from <repo>@<sha>" ---
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+
+      # --- 5. SBOM (list of components, for licences and CVEs) attested the same way ---
+      # continue-on-error: nice to have in the demo, never a reason to fail the build
+      - uses: anchore/sbom-action@v0
+        continue-on-error: true
+        with:
+          image: ${{ env.IMAGE }}:${{ steps.image.outputs.tag }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+      - uses: actions/attest-sbom@v2
+        continue-on-error: true
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          sbom-path: sbom.spdx.json
+
+      # --- 6. Token for demo-bot, limited to the vendor's deploy repo ---
+      - uses: actions/create-github-app-token@v2
+        id: bot
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: deploy-${{ inputs.vendor }}-${{ inputs.app }}
+
+      # --- 7. PR that moves dev to the new image; merges itself once checks pass ---
+      - name: Open dev PR
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          VERSION: ${{ steps.image.outputs.version }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          git clone -q "https://x-access-token:${GH_TOKEN}@github.com/${DEPLOY_REPO}.git" deploy
+          cd deploy
+          BRANCH="release/dev-${GITHUB_SHA::7}"
+          git checkout -q -b "$BRANCH"
+          yq -i ".images[0].digest = \"$DIGEST\" | .labels[0].pairs.\"app.kubernetes.io/version\" = \"$VERSION\"" envs/dev/kustomization.yaml
+          git -c user.name="demo-bot[bot]" -c user.email="demo-bot@users.noreply.github.com" \
+              commit -qam "dev: ${{ inputs.app }} $VERSION (${GITHUB_SHA::7})"
+          git push -q origin "$BRANCH"
+          gh pr create --repo "$DEPLOY_REPO" --head "$BRANCH" --base main \
+            --title "dev: ${{ inputs.app }} $VERSION" \
+            --body "Built by the platform pipeline from ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          Image: \`$IMAGE@$DIGEST\`"
+          gh pr merge --repo "$DEPLOY_REPO" "$BRANCH" --auto --squash

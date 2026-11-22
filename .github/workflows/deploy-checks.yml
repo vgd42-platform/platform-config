@@ -1,0 +1,81 @@
+# Required checks on every PR to a vendor deploy repo (shows as "platform-checks / validate").
+# Vendors can't change these checks: the workflow lives here, in platform-config.
+name: deploy-checks
+
+on:
+  workflow_call: {}
+
+permissions:
+  id-token: write   # Azure login, to read images from the registry
+  contents: read
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    env:
+      OWNER: ${{ github.repository_owner }}
+    steps:
+      # --- 1. The PR content, with history so we can compare against main ---
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # --- 2. Platform policies: the same rules for every vendor ---
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/platform-config
+          path: .platform
+
+      # --- 3. Which environments does this PR change? ---
+      - id: changed
+        run: |
+          envs=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" | awk -F/ '$1=="envs"{print $2}' | sort -u | xargs)
+          echo "Changed environments: ${envs:-none}"
+          echo "envs=$envs" >> "$GITHUB_OUTPUT"
+
+      # --- 4. Render every environment; check Kubernetes schema and platform policy ---
+      - name: Schema and policy
+        run: |
+          mkdir -p rendered
+          for dir in envs/*/; do kubectl kustomize "$dir" > "rendered/$(basename "$dir").yaml"; done
+          docker run --rm -v "$PWD/rendered:/r" ghcr.io/yannh/kubeconform:latest -strict -summary /r
+          docker run --rm -v "$PWD:/project" openpolicyagent/conftest test --policy .platform/policies rendered/
+
+      # --- 5. Provenance: image built by OUR workflow from the vendor's src repo in OUR org ---
+      - uses: azure/login@v2
+        if: steps.changed.outputs.envs != ''
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Built by our pipeline from our repo
+        if: steps.changed.outputs.envs != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          az acr login --name "${{ vars.ACR_NAME }}"
+          REPO_NAME=${GITHUB_REPOSITORY#*/}                 # deploy-<vendor>-<app>
+          SRC_REPO="$OWNER/src-${REPO_NAME#deploy-}"        # src-<vendor>-<app>
+          for env in ${{ steps.changed.outputs.envs }}; do
+            ref=$(yq '.images[0].newName + "@" + .images[0].digest' "envs/$env/kustomization.yaml")
+            echo "::group::$env: $ref"
+            gh attestation verify "oci://$ref" --repo "$SRC_REPO" \
+              --signer-workflow "$OWNER/platform-config/.github/workflows/build.yml"
+            echo "::endgroup::"
+          done
+
+      # --- 6. Promotion order: test gets dev's image, prod gets test's ---
+      - name: Same image as the previous environment
+        if: steps.changed.outputs.envs != ''
+        run: |
+          for env in ${{ steps.changed.outputs.envs }}; do
+            case "$env" in test) prev="dev" ;; prod) prev="test" ;; *) continue ;; esac
+            want=$(git show "origin/${{ github.base_ref }}:envs/$prev/kustomization.yaml" | yq '.images[0].digest')
+            have=$(yq '.images[0].digest' "envs/$env/kustomization.yaml")
+            if [ "$want" != "$have" ]; then
+              echo "::error::$env must use the image that is in $prev now ($want), not $have"
+              exit 1
+            fi
+            echo "$env uses the image from $prev: OK"
+          done
