@@ -28,13 +28,16 @@ az group create -n "$RG" -l "$LOCATION" --tags demo="$PREFIX" vendor="$VENDOR" a
 # Quota, default network policy and labels belong to Azure: vendors can't loosen them.
 # The pod-security label makes the cluster reject privileged containers.
 echo "-- 2. Managed namespaces"
+# az wants CPU in millicores ("500m"); a vendor file may say "1" or 0.5 - convert those
+cpu_m() { local v; v=$(yq "$1" "$FILE"); [[ "$v" == *m ]] && echo "$v" || awk -v c="$v" 'BEGIN { printf "%dm", c * 1000 }'; }
+CPU_REQ=$(cpu_m .quota.cpuRequest); CPU_LIM=$(cpu_m .quota.cpuLimit)
 for ENV in $ENVS; do
   NS="$NAME-$ENV"
   if az aks namespace show -n "$NS" --cluster-name "$AKS_NAME" -g "$PLATFORM_RG" -o none 2>/dev/null; then
     echo "   $NS exists"; continue
   fi
   az aks namespace add -n "$NS" --cluster-name "$AKS_NAME" -g "$PLATFORM_RG" \
-    --cpu-request "$(yq '.quota.cpuRequest' "$FILE")" --cpu-limit "$(yq '.quota.cpuLimit' "$FILE")" \
+    --cpu-request "$CPU_REQ" --cpu-limit "$CPU_LIM" \
     --memory-request "$(yq '.quota.memoryRequest' "$FILE")" --memory-limit "$(yq '.quota.memoryLimit' "$FILE")" \
     --ingress-policy AllowSameNamespace --egress-policy AllowAll \
     --adoption-policy Never --delete-policy Delete \
