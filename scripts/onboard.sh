@@ -54,29 +54,46 @@ for ENV in $ENVS; do   # trust the app's service account in each namespace
     --audiences api://AzureADTokenExchange -o none 2>/dev/null || echo "   aks-$ENV exists"
 done
 
-# --- 4. Let the vendor's repos log in to Azure from GitHub Actions ------------------------
+# --- 4. Vendor repos (empty for now) and their Azure trust ---------------------------------
+# Repos come first: since 15 July 2026 GitHub puts the repo's numeric ID into the token
+# subject (repo:<owner>@<id>/<repo>@<id>:...), so the trust needs the repo to exist.
 # src: our build pushes images. deploy: PR checks (pull_request) and Terraform (main).
-echo "-- 4. GitHub OIDC trust for the vendor repos"
-fedcred() { # <credential name> <subject>
-  az identity federated-credential create -g "$PLATFORM_RG" --identity-name "$PLATFORM_IDENTITY" \
-    --name "$1" --issuer https://token.actions.githubusercontent.com --subject "$2" \
-    --audiences api://AzureADTokenExchange -o none 2>/dev/null || echo "   $1 exists"
+echo "-- 4. Vendor repos and GitHub OIDC trust"
+ensure_repo() { # <src|deploy>
+  gh repo view "$ORG/$1-$NAME" >/dev/null 2>&1 \
+    || gh repo create "$ORG/$1-$NAME" --public --description "Vendor $VENDOR, app $APP ($1)" >/dev/null
 }
-fedcred "gh-src-$NAME-main"    "repo:$ORG/src-$NAME:ref:refs/heads/main"
-fedcred "gh-deploy-$NAME-main" "repo:$ORG/deploy-$NAME:ref:refs/heads/main"
-fedcred "gh-deploy-$NAME-pr"   "repo:$ORG/deploy-$NAME:pull_request"
+gh_sub() { # <repo> <context>  ->  subject with owner and repo IDs
+  local s
+  s=$(gh api "repos/$ORG/$1" --jq '"\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"')
+  [[ "$s" =~ ^[^@/]+@[0-9]+/[^@/]+@[0-9]+$ ]] || { echo "Cannot read GitHub IDs of $ORG/$1" >&2; return 1; }
+  echo "repo:$s:$2"
+}
+fedcred() { # <credential name> <subject>   create, or correct the subject
+  local args=(-g "$PLATFORM_RG" --identity-name "$PLATFORM_IDENTITY" -n "$1"
+              --issuer https://token.actions.githubusercontent.com --subject "$2"
+              --audiences api://AzureADTokenExchange -o none)
+  if az identity federated-credential show -g "$PLATFORM_RG" --identity-name "$PLATFORM_IDENTITY" -n "$1" -o none 2>/dev/null; then
+    az identity federated-credential update "${args[@]}"
+  else
+    az identity federated-credential create "${args[@]}"
+  fi
+  echo "   $1 -> $2"
+}
+ensure_repo deploy
+ensure_repo src
+SUB_SRC=$(gh_sub "src-$NAME" ref:refs/heads/main)          # assignments: a failure stops the script
+SUB_DEPLOY=$(gh_sub "deploy-$NAME" ref:refs/heads/main)
+SUB_PR=$(gh_sub "deploy-$NAME" pull_request)
+fedcred "gh-src-$NAME-main"    "$SUB_SRC"
+fedcred "gh-deploy-$NAME-main" "$SUB_DEPLOY"
+fedcred "gh-deploy-$NAME-pr"   "$SUB_PR"
 sleep 30   # new federated credentials take a moment before the first login works
 
-# --- 5. Repo from a template folder, with the placeholders filled in -----------------------
-create_repo() { # <src|deploy>
+# --- 5. Fill a repo from its template folder, placeholders replaced ------------------------
+fill_repo() { # <src|deploy>
   local repo="$ORG/$1-$NAME" tmp
-  if gh repo view "$repo" >/dev/null 2>&1; then
-    # exists: skip, unless an earlier run created it but never pushed content
-    if [[ "$(gh repo view "$repo" --json isEmpty --jq .isEmpty)" != "true" ]]; then echo "   $repo exists"; return 0; fi
-    echo "   $repo exists but is empty - filling it"
-  else
-    gh repo create "$repo" --public --description "Vendor $VENDOR, app $APP ($1)" >/dev/null
-  fi
+  if [[ "$(gh repo view "$repo" --json isEmpty --jq .isEmpty)" != "true" ]]; then echo "   $repo has content"; return 0; fi
   tmp=$(mktemp -d)
   cp -r "templates/$1/." "$tmp"
   grep -rlF '__' "$tmp" | xargs -r sed -i \
@@ -89,7 +106,7 @@ create_repo() { # <src|deploy>
            commit -qm "Onboarding: initial content" \
     && git push -q "https://x-access-token:${GH_TOKEN}@github.com/$repo.git" main)
   gh api -X PATCH "repos/$repo" -F allow_auto_merge=true -F delete_branch_on_merge=true >/dev/null
-  echo "   $repo created"
+  echo "   $repo filled"
 }
 
 # --- 6. Branch protection (rulesets) ---------------------------------------------------------
@@ -103,9 +120,9 @@ protect() { # <repo> <ruleset json>
 # Order matters: deploy repo first (the first build opens a PR there), src repo last
 # (its first push starts the first build).
 echo "-- 5/6. Repos and protection"
-create_repo deploy
+fill_repo deploy
 protect "$ORG/deploy-$NAME" scripts/rulesets/deploy.json
-create_repo src
+fill_repo src
 protect "$ORG/src-$NAME" scripts/rulesets/src.json
 
 # --- 7. Optional: vendor staff group gets read-only access to its namespaces ------------------
