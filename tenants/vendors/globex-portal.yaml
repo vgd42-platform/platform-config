@@ -1,0 +1,15 @@
+# Onboarding request for the second demo vendor (scene 1). Copied into
+# platform-config/tenants/vendors/ by scene1-onboard-globex.sh.
+vendor: globex
+app: portal
+environments: [dev, test, prod]
+
+quota:
+  cpuRequest: 500m
+  cpuLimit: 1000m
+  memoryRequest: 512Mi
+  memoryLimit: 1Gi
+
+freeze: false
+color: "#2da44e"
+entraGroupId: ""
