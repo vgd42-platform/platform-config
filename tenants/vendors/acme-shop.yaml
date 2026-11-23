@@ -13,7 +13,7 @@ quota:
   memoryLimit: 1Gi
 
 # true = platform freezes prod deployments (Argo CD deny window)
-freeze: false
+freeze: true
 
 # Starting background colour of the demo app
 color: "#1f6feb"
